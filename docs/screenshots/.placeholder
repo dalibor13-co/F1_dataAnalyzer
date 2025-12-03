@@ -1,0 +1,35 @@
+# 📸 Visual Preview Placeholders
+
+These are placeholder images. To display actual screenshots:
+
+1. Run the application and take screenshots
+2. Replace these placeholder files with actual images
+3. Or use this Python script for automatic screenshots (requires selenium):
+
+```python
+from selenium import webdriver
+import time
+
+driver = webdriver.Chrome()
+
+# Dashboard
+driver.get("http://localhost:3000")
+time.sleep(3)
+driver.save_screenshot("dashboard.png")
+
+# Telemetry
+driver.get("http://localhost:3000/telemetry")
+time.sleep(5)
+driver.save_screenshot("telemetry.png")
+
+# etc...
+driver.quit()
+```
+
+## Tip: Use GitHub Issues for Images
+
+Alternatively, you can upload images to GitHub Issues and use their URLs in README:
+
+```markdown
+![Dashboard](https://user-images.githubusercontent.com/xxxxx/dashboard.png)
+```
