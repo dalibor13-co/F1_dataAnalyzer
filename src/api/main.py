@@ -87,25 +87,82 @@ def get_safety_car_periods(
     race: int
 ):
     """
-    Get Safety Car and VSC periods for a race
+    Get Safety Car and VSC periods for a race (aggregated into intervals)
     
     Args:
         year: Season year
         race: Race round number
     
     Returns:
-        Safety Car periods information
+        Safety Car periods information with start and end laps
     """
     try:
         loader = F1DataLoader()
         session = loader.load_session(year, race, "R")
-        sc_periods = loader.get_safety_car_periods(session)
+        sc_data = loader.get_safety_car_periods(session)
+        
+        # Aggregate Safety Car periods into intervals
+        aggregated = []
+        current_period = None
+        
+        for item in sc_data:
+            lap = item.get('lap')
+            sc_type = item.get('type', '')
+            reason = item.get('reason', '')
+            reason_upper = reason.upper()
+            
+            # Skip CHEQUERED FLAG
+            if 'CHEQUERED FLAG' in reason_upper:
+                continue
+            
+            # Check if this is a deployment or end message
+            is_deployment = any(keyword in reason_upper for keyword in [
+                'DEPLOYED', 'SC DEPLOYED', 'VSC DEPLOYED'
+            ])
+            is_end = any(keyword in reason_upper for keyword in [
+                'IN THIS LAP', 'ENDING', 'VSC ENDING', 'SC ENDING'
+            ])
+            
+            if is_deployment:
+                # Close previous period if exists
+                if current_period is not None:
+                    aggregated.append(current_period)
+                
+                # Start new period
+                current_period = {
+                    'start_lap': lap,
+                    'end_lap': lap,
+                    'type': sc_type,
+                    'reason': reason
+                }
+            elif is_end:
+                if current_period is not None:
+                    # Set end lap and close period
+                    current_period['end_lap'] = lap
+                    aggregated.append(current_period)
+                    current_period = None
+                else:
+                    # End without clear start - create single lap period
+                    aggregated.append({
+                        'start_lap': lap,
+                        'end_lap': lap,
+                        'type': sc_type,
+                        'reason': reason
+                    })
+            elif current_period is not None:
+                # Update end lap for any other SC/VSC related message
+                # but don't close the period
+                current_period['end_lap'] = lap
+        
+        # Close any open period
+        if current_period is not None:
+            aggregated.append(current_period)
         
         return {
             "year": year,
             "race": race,
             "event": session.event['EventName'],
-            "safety_car_periods": sc_periods
+            "safety_car_periods": aggregated
         }
     except Exception as e:
         logger.error("Failed to get Safety Car data", err=str(e))
@@ -150,6 +207,136 @@ def get_races(year: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/pitstops/{year}/{race}")
+def get_race_pitstops(
+    year: int,
+    race: int,
+    session: str = Query("R", description="Session type (R for race)")
+):
+    """
+    Get all pit stops for all drivers in a race.
+    
+    This endpoint retrieves pit stop data directly from FastF1's PitInTime field,
+    providing accurate information about when drivers entered the pits during the race.
+    
+    Args:
+        year (int): Season year (e.g., 2024, 2025)
+        race (int): Race round number (1-24 depending on season)
+        session (str, optional): Session type. Defaults to "R" (Race).
+            Options: "FP1", "FP2", "FP3", "Q" (Qualifying), "S" (Sprint), "R" (Race)
+    
+    Returns:
+        dict: Dictionary containing:
+            - race (str): Race name (e.g., "Monaco Grand Prix")
+            - year (int): Season year
+            - total_drivers (int): Number of drivers with pit stops
+            - pitstops (dict): Pit stop data for each driver, keyed by driver code:
+                - driver (str): 3-letter driver code (e.g., "VER", "HAM")
+                - total_stops (int): Total number of pit stops for this driver
+                - stops (list): List of pit stop details:
+                    - lap (int): Lap number when pit stop occurred
+                    - stint (int|null): Stint number
+                    - pit_in_time (float|null): Session time when entering pit (seconds)
+                    - pit_out_time (float|null): Session time when exiting pit (seconds)
+                    - pit_duration (float|null): Time spent in pit lane (seconds)
+                    - lap_time (float): Total lap time including pit stop (seconds)
+                    - compound_before (str): Tyre compound before pit stop
+                    - tyre_life_before (int): Age of tyres before pit stop (laps)
+    
+    Raises:
+        HTTPException: 500 error if data loading fails
+    
+    Example:
+        GET /pitstops/2025/1
+        
+        Response:
+        {
+            "race": "Bahrain Grand Prix",
+            "year": 2025,
+            "total_drivers": 20,
+            "pitstops": {
+                "VER": {
+                    "driver": "VER",
+                    "total_stops": 2,
+                    "stops": [
+                        {
+                            "lap": 15,
+                            "stint": 1,
+                            "pit_duration": 2.3,
+                            "lap_time": 107.5,
+                            "compound_before": "MEDIUM",
+                            "tyre_life_before": 15
+                        },
+                        ...
+                    ]
+                },
+                ...
+            }
+        }
+    """
+    try:
+        logger.info("Fetching pit stops", year=year, race=race, session=session)
+        
+        # Load session
+        session_obj = loader.load_session(year, race, session)
+        
+        # Get all laps
+        laps = session_obj.laps
+        
+        # Filter laps with pit stops (PitInTime is not null)
+        pit_laps = laps[laps['PitInTime'].notna()].copy()
+        
+        # Group by driver
+        pitstops_by_driver = {}
+        
+        for driver_code in pit_laps['Driver'].unique():
+            driver_pits = pit_laps[pit_laps['Driver'] == driver_code].sort_values('PitInTime')
+            
+            pit_stops = []
+            for _, lap in driver_pits.iterrows():
+                pit_stop = {
+                    "lap": int(lap['LapNumber']),
+                    "stint": int(lap['Stint']) if pd.notna(lap.get('Stint')) else None,
+                }
+                
+                if pd.notna(lap.get('PitInTime')):
+                    pit_stop["pit_in_time"] = lap['PitInTime'].total_seconds() if hasattr(lap['PitInTime'], 'total_seconds') else None
+                
+                if pd.notna(lap.get('PitOutTime')):
+                    pit_stop["pit_out_time"] = lap['PitOutTime'].total_seconds() if hasattr(lap['PitOutTime'], 'total_seconds') else None
+                
+                if pd.notna(lap.get('PitDuration')):
+                    pit_stop["pit_duration"] = lap['PitDuration'].total_seconds() if hasattr(lap['PitDuration'], 'total_seconds') else None
+                
+                if pd.notna(lap.get('LapTime')):
+                    pit_stop["lap_time"] = lap['LapTime'].total_seconds()
+                
+                if pd.notna(lap.get('Compound')):
+                    pit_stop["compound_before"] = lap['Compound']
+                
+                if pd.notna(lap.get('TyreLife')):
+                    pit_stop["tyre_life_before"] = int(lap['TyreLife'])
+                
+                pit_stops.append(pit_stop)
+            
+            pitstops_by_driver[driver_code] = {
+                "driver": driver_code,
+                "total_stops": len(pit_stops),
+                "stops": pit_stops
+            }
+        
+        return {
+            "race": session_obj.event['EventName'],
+            "year": year,
+            "total_drivers": len(pitstops_by_driver),
+            "pitstops": pitstops_by_driver
+        }
+        
+    except Exception as e:
+        logger.error("Failed to fetch pit stops", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/laps/{year}/{race}/{driver}")
 def get_driver_laps(
     year: int,
@@ -158,16 +345,79 @@ def get_driver_laps(
     session: str = Query("R", description="Session type (FP1, FP2, FP3, Q, R)")
 ):
     """
-    Get lap data for a driver in a specific race
+    Get lap data and pit stops for a specific driver in a race.
+    
+    This endpoint provides comprehensive lap-by-lap data for a driver, including
+    lap times, sector times, tyre information, and pit stop details extracted
+    directly from FastF1 data.
     
     Args:
-        year: Season year
-        race: Race round number
-        driver: Driver 3-letter code
-        session: Session type
+        year (int): Season year (e.g., 2024, 2025)
+        race (int): Race round number (1-24 depending on season)
+        driver (str): Driver 3-letter code (e.g., "VER", "HAM", "LEC")
+        session (str, optional): Session type. Defaults to "R" (Race).
+            Options: "FP1", "FP2", "FP3", "Q" (Qualifying), "S" (Sprint), "R" (Race)
     
     Returns:
-        Lap times and telemetry data
+        dict: Dictionary containing:
+            - driver (str): Driver 3-letter code
+            - race (str): Race name (e.g., "Monaco Grand Prix")
+            - laps (list): List of lap data (excludes pit laps for clean analysis):
+                - lap_number (int): Lap number
+                - time (float|null): Lap time in seconds
+                - sector1 (float|null): Sector 1 time in seconds
+                - sector2 (float|null): Sector 2 time in seconds
+                - sector3 (float|null): Sector 3 time in seconds
+                - compound (str): Tyre compound ("SOFT", "MEDIUM", "HARD", etc.)
+                - tyre_life (int|null): Age of tyres in laps
+            - pit_stops (list): List of pit stops (from raw data before cleaning):
+                - lap (int): Lap number when pit stop occurred
+                - stint (int|null): Stint number
+                - pit_in_time (float|null): Session time entering pit (seconds)
+                - pit_out_time (float|null): Session time exiting pit (seconds)
+                - pit_duration (float|null): Time spent in pit lane (seconds)
+                - lap_time (float): Total lap time including pit stop (seconds)
+                - compound_before (str): Tyre compound before change
+                - tyre_life_before (int): Tyre age before change (laps)
+    
+    Raises:
+        HTTPException: 500 error if session loading or data processing fails
+    
+    Example:
+        GET /laps/2025/1/VER?session=R
+        
+        Response:
+        {
+            "driver": "VER",
+            "race": "Bahrain Grand Prix",
+            "laps": [
+                {
+                    "lap_number": 1,
+                    "time": 92.5,
+                    "sector1": 28.1,
+                    "sector2": 35.2,
+                    "sector3": 29.2,
+                    "compound": "MEDIUM",
+                    "tyre_life": 1
+                },
+                ...
+            ],
+            "pit_stops": [
+                {
+                    "lap": 15,
+                    "stint": 1,
+                    "pit_duration": 2.3,
+                    "lap_time": 107.5,
+                    "compound_before": "MEDIUM",
+                    "tyre_life_before": 15
+                }
+            ]
+        }
+        
+    Note:
+        - Lap data is cleaned (pit laps removed) for race pace analysis
+        - Pit stops are extracted from raw data before cleaning to preserve accuracy
+        - Sector times may be null if not available in telemetry
     """
     try:
         logger.info("Fetching laps", year=year, race=race, driver=driver, session=session)
@@ -175,15 +425,44 @@ def get_driver_laps(
         # Load session
         session_obj = loader.load_session(year, race, session)
         
-        # Get laps
-        laps = loader.get_laps(session_obj, driver)
+        # Get laps (uncleaned - contains pit stops)
+        laps_raw = loader.get_laps(session_obj, driver)
         
-        # Clean data
-        laps_clean = LapProcessor.clean_lap_times(laps)
+        # Extract pit stops from raw data BEFORE cleaning
+        pit_stops = []
+        for _, lap in laps_raw[laps_raw['PitInTime'].notna()].iterrows():
+            pit_stop = {
+                "lap": int(lap['LapNumber']),
+                "stint": int(lap['Stint']) if pd.notna(lap.get('Stint')) else None,
+                "pit_in_time": lap['PitInTime'].total_seconds() if hasattr(lap['PitInTime'], 'total_seconds') else None,
+            }
+            
+            # Add optional fields if available
+            if pd.notna(lap.get('PitOutTime')):
+                pit_stop["pit_out_time"] = lap['PitOutTime'].total_seconds() if hasattr(lap['PitOutTime'], 'total_seconds') else None
+            
+            if pd.notna(lap.get('PitDuration')):
+                pit_stop["pit_duration"] = lap['PitDuration'].total_seconds() if hasattr(lap['PitDuration'], 'total_seconds') else None
+            
+            if pd.notna(lap.get('LapTime')):
+                pit_stop["lap_time"] = lap['LapTime'].total_seconds()
+            
+            if pd.notna(lap.get('Compound')):
+                pit_stop["compound_before"] = lap['Compound']
+            
+            if pd.notna(lap.get('TyreLife')):
+                pit_stop["tyre_life_before"] = int(lap['TyreLife'])
+            
+            pit_stops.append(pit_stop)
+        
+        # Clean data for lap times (removes pit laps)
+        laps_clean = LapProcessor.clean_lap_times(laps_raw)
         
         # Convert to response format
         lap_data = []
+        
         for _, lap in laps_clean.iterrows():
+            # Collect lap data
             lap_data.append({
                 "lap_number": int(lap['LapNumber']),
                 "time": lap['LapTime'].total_seconds() if pd.notna(lap['LapTime']) else None,
@@ -197,7 +476,8 @@ def get_driver_laps(
         return {
             "driver": driver,
             "race": session_obj.event['EventName'],
-            "laps": lap_data
+            "laps": lap_data,
+            "pit_stops": pit_stops
         }
     
     except Exception as e:

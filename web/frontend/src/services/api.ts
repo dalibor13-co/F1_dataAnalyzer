@@ -27,10 +27,22 @@ export interface LapData {
   tyre_life: number | null
 }
 
+export interface PitStop {
+  lap: number
+  stint: number | null
+  pit_in_time?: number
+  pit_out_time?: number
+  pit_duration?: number
+  lap_time?: number
+  compound_before?: string
+  tyre_life_before?: number
+}
+
 export interface DriverLaps {
   driver: string
   race: string
   laps: LapData[]
+  pit_stops: PitStop[]
 }
 
 export interface Comparison {
@@ -68,7 +80,8 @@ export interface PaceAnalysis {
 }
 
 export interface SafetyCarPeriod {
-  lap: number
+  start_lap: number
+  end_lap: number
   type: string
   reason: string
 }

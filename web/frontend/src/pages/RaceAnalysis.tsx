@@ -2,37 +2,20 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiService, type DriverLaps, type PaceAnalysis, type Race, type SafetyCarData } from '@/services/api'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter, ZAxis, ComposedChart, ReferenceLine } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter, ZAxis, ComposedChart, ReferenceLine, ReferenceArea } from 'recharts'
 import { Clock, Gauge, TrendingDown, Zap, Activity, Target, Award, Filter, AlertTriangle } from 'lucide-react'
 
-const DRIVERS = [
-  { code: 'VER', name: 'Max Verstappen' },
-  { code: 'HAM', name: 'Lewis Hamilton' },
-  { code: 'LEC', name: 'Charles Leclerc' },
-  { code: 'NOR', name: 'Lando Norris' },
-  { code: 'PER', name: 'Sergio Perez' },
-  { code: 'SAI', name: 'Carlos Sainz' },
-  { code: 'RUS', name: 'George Russell' },
-  { code: 'ALO', name: 'Fernando Alonso' },
-  { code: 'PIA', name: 'Oscar Piastri' },
-  { code: 'OCO', name: 'Esteban Ocon' },
-  { code: 'GAS', name: 'Pierre Gasly' },
-  { code: 'STR', name: 'Lance Stroll' },
-  { code: 'BOT', name: 'Valtteri Bottas' },
-  { code: 'ZHO', name: 'Zhou Guanyu' },
-  { code: 'TSU', name: 'Yuki Tsunoda' },
-  { code: 'RIC', name: 'Daniel Ricciardo' },
-  { code: 'MAG', name: 'Kevin Magnussen' },
-  { code: 'HUL', name: 'Nico Hulkenberg' },
-  { code: 'ALB', name: 'Alexander Albon' },
-  { code: 'SAR', name: 'Logan Sargeant' },
-  { code: 'LAW', name: 'Liam Lawson' },
-  { code: 'BEA', name: 'Oliver Bearman' },
-]
+interface Driver {
+  code: string
+  name: string
+  number: string
+}
 
 export default function RaceAnalysis() {
   const { year, round } = useParams<{ year: string; round: string }>()
-  const [selectedDriver, setSelectedDriver] = useState('VER')
+  const [selectedDriver, setSelectedDriver] = useState('')
+  const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([])
+  const [loadingDrivers, setLoadingDrivers] = useState(false)
   const [driverLaps, setDriverLaps] = useState<DriverLaps | null>(null)
   const [paceAnalysis, setPaceAnalysis] = useState<PaceAnalysis | null>(null)
   const [races, setRaces] = useState<Race[]>([])
@@ -47,6 +30,12 @@ export default function RaceAnalysis() {
       loadRaces()
     }
   }, [year])
+
+  useEffect(() => {
+    if (year && round) {
+      loadDrivers()
+    }
+  }, [year, round])
 
   useEffect(() => {
     if (year && round && selectedDriver) {
@@ -74,8 +63,37 @@ export default function RaceAnalysis() {
     }
   }
 
-  const loadDriverData = async () => {
+  const loadDrivers = async () => {
     if (!year || !round) return
+    
+    setLoadingDrivers(true)
+    setDriverLaps(null)
+    setPaceAnalysis(null)
+    
+    try {
+      const response = await fetch(`http://localhost:8000/drivers/${year}/${round}`)
+      const data = await response.json()
+      
+      setAvailableDrivers(data.drivers)
+      
+      // Auto-select first driver if none selected or current not available
+      if (data.drivers.length > 0) {
+        const driverCodes = data.drivers.map((d: Driver) => d.code)
+        if (!selectedDriver || !driverCodes.includes(selectedDriver)) {
+          setSelectedDriver(data.drivers[0].code)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load drivers:', err)
+      setError('Failed to load drivers for this race')
+    } finally {
+      setLoadingDrivers(false)
+    }
+  }
+
+  const loadDriverData = async () => {
+    if (!year || !round || !selectedDriver) return
+    if (loadingDrivers) return
     
     setLoading(true)
     setError(null)
@@ -118,14 +136,44 @@ export default function RaceAnalysis() {
   const chartData = driverLaps?.laps.map(lap => ({
     lap: lap.lap_number,
     time: lap.time,
-    compound: lap.compound
+    compound: lap.compound,
+    tyre_life: lap.tyre_life
   })) || []
 
-  // Detect pit stops (when compound changes)
-  const pitStops: number[] = []
+  // Use pit stops from backend (real FastF1 data)
+  const pitStops: number[] = driverLaps?.pit_stops?.map(ps => ps.lap) || []
+  const pitStopDetails: Array<{lap: number, reasons: string[], duration?: number, lapTime?: number}> = driverLaps?.pit_stops?.map(ps => {
+    const reasons = []
+    
+    if (ps.compound_before) {
+      reasons.push(`Compound: ${ps.compound_before}`)
+    }
+    if (ps.tyre_life_before) {
+      reasons.push(`Tyre life: ${ps.tyre_life_before} laps`)
+    }
+    
+    return { 
+      lap: ps.lap, 
+      reasons,
+      duration: ps.pit_duration,
+      lapTime: ps.lap_time
+    }
+  }) || []
+  
+  // Find missing laps (gaps in sequence)
+  const missingLaps: string[] = []
+  const missingLapNumbers: number[] = []
+  
   for (let i = 1; i < chartData.length; i++) {
-    if (chartData[i].compound !== chartData[i - 1].compound) {
-      pitStops.push(chartData[i].lap)
+    const prevLap = chartData[i - 1].lap
+    const currentLap = chartData[i].lap
+    if (currentLap - prevLap > 1) {
+      const missing = []
+      for (let j = prevLap + 1; j < currentLap; j++) {
+        missing.push(j)
+        missingLapNumbers.push(j)
+      }
+      missingLaps.push(`${prevLap}-${currentLap} (missing: ${missing.join(', ')})`)
     }
   }
 
@@ -138,47 +186,92 @@ export default function RaceAnalysis() {
     'WET': '#0000ff',
   }
 
-  // Group data by compound for coloring - create continuous segments
+  // Build stints using pit stop data for accurate compound tracking
   const stints: Array<{ compound: string; data: typeof chartData; startLap: number; endLap: number }> = []
-  let currentCompound = chartData[0]?.compound
-  let stintData: typeof chartData = []
   
-  chartData.forEach((lap, index) => {
-    if (lap.compound !== currentCompound && stintData.length > 0) {
-      stints.push({
-        compound: currentCompound,
-        data: stintData,
-        startLap: stintData[0].lap,
-        endLap: stintData[stintData.length - 1].lap
-      })
-      stintData = [lap]
-      currentCompound = lap.compound
-    } else {
-      stintData.push(lap)
-    }
+  if (chartData.length > 0 && pitStopDetails.length > 0) {
+    // Sort pit stops by lap
+    const sortedPitStops = [...pitStopDetails].sort((a, b) => a.lap - b.lap)
     
-    // Last stint
-    if (index === chartData.length - 1 && stintData.length > 0) {
+    // Get first and last lap numbers
+    const firstLap = Math.min(...chartData.map(l => l.lap))
+    const lastLap = Math.max(...chartData.map(l => l.lap))
+    
+    // Build stints based on pit stops
+    let stintStart = firstLap
+    
+    sortedPitStops.forEach((pitStop, idx) => {
+      const stintEnd = pitStop.lap - 1
+      
+      // Get data for this stint
+      const stintLaps = chartData.filter(l => l.lap >= stintStart && l.lap <= stintEnd)
+      
+      // Determine compound from first available lap or use inference
+      let compound = stintLaps.find(l => l.compound)?.compound
+      
+      // If no compound found in data, try to get from previous stint's compound_before
+      if (!compound && idx > 0) {
+        const prevPitStop = sortedPitStops[idx - 1]
+        compound = driverLaps?.pit_stops?.find(ps => ps.lap === prevPitStop.lap)?.compound_before
+      }
+      
+      // Fallback to first lap compound
+      if (!compound) {
+        compound = chartData[0]?.compound || 'MEDIUM'
+      }
+      
+      if (stintStart <= stintEnd) {
+        stints.push({
+          compound: compound,
+          data: stintLaps,
+          startLap: stintStart,
+          endLap: stintEnd
+        })
+      }
+      
+      stintStart = pitStop.lap + 1
+    })
+    
+    // Add final stint (after last pit stop)
+    const finalStintLaps = chartData.filter(l => l.lap >= stintStart && l.lap <= lastLap)
+    if (finalStintLaps.length > 0) {
+      const lastPitStop = sortedPitStops[sortedPitStops.length - 1]
+      const compound = driverLaps?.pit_stops?.find(ps => ps.lap === lastPitStop.lap)?.compound_before || finalStintLaps[0]?.compound || 'HARD'
+      
       stints.push({
-        compound: currentCompound,
-        data: stintData,
-        startLap: stintData[0].lap,
-        endLap: stintData[stintData.length - 1].lap
+        compound: compound,
+        data: finalStintLaps,
+        startLap: stintStart,
+        endLap: lastLap
       })
     }
-  })
+  } else if (chartData.length > 0) {
+    // No pit stops - single stint
+    const firstLap = Math.min(...chartData.map(l => l.lap))
+    const lastLap = Math.max(...chartData.map(l => l.lap))
+    
+    stints.push({
+      compound: chartData[0]?.compound || 'MEDIUM',
+      data: chartData,
+      startLap: firstLap,
+      endLap: lastLap
+    })
+  }
+
 
   // Filter laps based on selection
   const filteredChartData = chartData.filter(lap => {
     if (lapFilter === 'all') return true
-    const times = chartData.map(l => l.time)
+    const times = chartData.map(l => l.time).filter((t): t is number => t !== null)
+    if (times.length === 0) return true
+    
     const fastest = Math.min(...times)
     const average = times.reduce((a, b) => a + b, 0) / times.length
     
-    if (lapFilter === 'fastest') {
+    if (lapFilter === 'fastest' && lap.time) {
       return lap.time <= fastest * 1.03 // within 3% of fastest
     }
-    if (lapFilter === 'average') {
+    if (lapFilter === 'average' && lap.time) {
       return Math.abs(lap.time - average) <= average * 0.02 // within 2% of average
     }
     return true
@@ -198,21 +291,28 @@ export default function RaceAnalysis() {
       {/* Driver Selector */}
       <div className="flex items-center space-x-4 flex-wrap gap-4">
         <div className="flex items-center space-x-2">
-          <label className="text-sm font-medium">Driver:</label>
+          <label className="text-sm font-medium">
+            Driver: {loadingDrivers && <span className="text-muted-foreground">(loading...)</span>}
+          </label>
           <select
             value={selectedDriver}
             onChange={(e) => setSelectedDriver(e.target.value)}
+            disabled={availableDrivers.length === 0 || loading || loadingDrivers}
             className="px-4 py-2 rounded-md border border-border bg-card text-foreground w-64"
           >
-            {DRIVERS.map(driver => (
-              <option key={driver.code} value={driver.code}>
-                {driver.name}
-              </option>
-            ))}
+            {availableDrivers.length === 0 ? (
+              <option value="">Loading drivers...</option>
+            ) : (
+              availableDrivers.map(driver => (
+                <option key={driver.code} value={driver.code}>
+                  {driver.name}
+                </option>
+              ))
+            )}
           </select>
           <button
             onClick={loadDriverData}
-            disabled={loading}
+            disabled={loading || loadingDrivers || !selectedDriver}
             className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {loading ? 'Loading...' : 'Load Data'}
@@ -339,8 +439,8 @@ export default function RaceAnalysis() {
           </div>
 
           {/* Pit Stop & Tyre Strategy Overview */}
-          {pitStops.length > 0 && (
-            <Card>
+          {chartData.length > 0 && (
+            <Card className="border-orange-500/30 bg-orange-500/5">
               <CardHeader>
                 <CardTitle>🔧 Pit Stop Strategy</CardTitle>
                 <CardDescription>
@@ -355,14 +455,27 @@ export default function RaceAnalysis() {
                   </div>
                   <div className="border-t pt-3">
                     <p className="text-sm font-medium mb-2">Pit Stop Laps:</p>
-                    <div className="flex flex-wrap gap-2">
-                      {pitStops.map((lap) => (
-                        <span key={lap} className="px-3 py-1 bg-orange-500/20 text-orange-500 rounded-md text-sm font-medium">
-                          Lap {lap}
-                        </span>
-                      ))}
+                    <div className="flex flex-wrap gap-3">
+                      {pitStops.length > 0 ? pitStopDetails.map((detail) => (
+                        <div key={detail.lap} className="flex flex-col items-center px-4 py-3 bg-orange-500/20 border border-orange-500/30 rounded-lg">
+                          <div className="text-lg font-bold text-orange-500">Lap {detail.lap}</div>
+                          {detail.lapTime && (
+                            <div className="text-sm text-orange-400 mt-1 font-medium">
+                              {detail.lapTime.toFixed(1)}s
+                            </div>
+                          )}
+                          {detail.duration && (
+                            <div className="text-xs text-orange-300 mt-0.5">
+                              pit: {detail.duration.toFixed(1)}s
+                            </div>
+                          )}
+                        </div>
+                      )) : (
+                        <span className="text-sm text-muted-foreground">No pit stops detected in data</span>
+                      )}
                     </div>
                   </div>
+                  
                   <div className="border-t pt-3">
                     <p className="text-sm font-medium mb-2">Tyre Compounds Used:</p>
                     <div className="flex flex-wrap gap-2">
@@ -408,12 +521,10 @@ export default function RaceAnalysis() {
                     <div className="flex flex-wrap gap-2">
                       {safetyCarData.safety_car_periods.map((sc, idx) => {
                         const isRedFlag = sc.type === 'Red Flag'
-                        const isSC = sc.type === 'Safety Car'
-                        const isVSC = sc.type === 'VSC'
                         
                         return (
                           <div 
-                            key={`${sc.lap}-${idx}`} 
+                            key={`${sc.start_lap}-${idx}`} 
                             className={`px-3 py-2 border rounded-md ${
                               isRedFlag 
                                 ? 'bg-red-500/20 border-red-500/30' 
@@ -430,7 +541,7 @@ export default function RaceAnalysis() {
                                     ? 'text-red-600 dark:text-red-400'
                                     : 'text-yellow-600 dark:text-yellow-400'
                                 }`}>
-                                  Lap {sc.lap}
+                                  Laps {sc.start_lap}{sc.start_lap !== sc.end_lap ? ` - ${sc.end_lap}` : ''}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
                                   {sc.type}
@@ -454,7 +565,7 @@ export default function RaceAnalysis() {
 
       {/* Lap Times Chart */}
       {driverLaps && driverLaps.laps.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-6">
           <Card>
             <CardHeader>
               <CardTitle>Lap Times - {selectedDriver}</CardTitle>
@@ -465,9 +576,28 @@ export default function RaceAnalysis() {
             <CardContent>
               <ResponsiveContainer width="100%" height={400}>
                 <LineChart data={filteredChartData}>
+                  {/* Safety Car background highlighting - must be FIRST for background */}
+                  {safetyCarData?.safety_car_periods
+                    .filter(sc => sc.type !== 'Red Flag')
+                    .map((sc, idx) => (
+                      <ReferenceArea 
+                        key={`sc-area-${sc.start_lap}-${idx}`} 
+                        x1={sc.start_lap - 0.5} 
+                        x2={sc.end_lap + 0.5} 
+                        fill="#ffeb3b"
+                        fillOpacity={0.4}
+                        strokeOpacity={0}
+                        ifOverflow="extendDomain"
+                      />
+                    ))
+                  }
+                  
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis 
                     dataKey="lap" 
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    allowDecimals={false}
                     label={{ value: 'Lap Number', position: 'insideBottom', offset: -5 }}
                   />
                   <YAxis 
@@ -509,24 +639,24 @@ export default function RaceAnalysis() {
                   ))}
                   
                   {/* Incident markers */}
-                  {safetyCarData?.safety_car_periods.map((sc, idx) => {
-                    const isRedFlag = sc.type === 'Red Flag'
-                    return (
+                  {safetyCarData?.safety_car_periods
+                    .filter(sc => sc.type !== 'Red Flag')  // Only show SC/VSC markers, not Red Flag
+                    .map((sc, idx) => (
                       <ReferenceLine 
-                        key={`incident-${sc.lap}-${idx}`} 
-                        x={sc.lap} 
-                        stroke={isRedFlag ? '#ff0000' : '#ffff00'} 
-                        strokeWidth={3}
+                        key={`incident-${sc.start_lap}-${idx}`} 
+                        x={sc.start_lap} 
+                        stroke="#ffeb3b" 
+                        strokeWidth={2}
                         strokeDasharray="3 3"
                         label={{ 
-                          value: isRedFlag ? '🚩' : '🚗', 
+                          value: '🚗', 
                           position: 'top', 
-                          fill: isRedFlag ? '#ff0000' : '#ffff00', 
-                          fontSize: 16 
+                          fill: '#ffeb3b', 
+                          fontSize: 14 
                         }}
                       />
-                    )
-                  })}
+                    ))
+                  }
                   
                   {/* Main line - gray/neutral */}
                   <Line 
@@ -581,9 +711,28 @@ export default function RaceAnalysis() {
             <CardContent>
               <ResponsiveContainer width="100%" height={400}>
                 <ScatterChart data={filteredChartData}>
+                  {/* Safety Car background highlighting */}
+                  {safetyCarData?.safety_car_periods
+                    .filter(sc => sc.type !== 'Red Flag')
+                    .map((sc, idx) => (
+                      <ReferenceArea 
+                        key={`sc-scatter-${sc.start_lap}-${idx}`} 
+                        x1={sc.start_lap - 0.5} 
+                        x2={sc.end_lap + 0.5} 
+                        fill="#ffeb3b"
+                        fillOpacity={0.4}
+                        strokeOpacity={0}
+                        ifOverflow="extendDomain"
+                      />
+                    ))
+                  }
+                  
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis 
                     dataKey="lap" 
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    allowDecimals={false}
                     label={{ value: 'Lap Number', position: 'insideBottom', offset: -5 }}
                   />
                   <YAxis 
@@ -625,18 +774,18 @@ export default function RaceAnalysis() {
                   ))}
                   
                   {/* Incident markers */}
-                  {safetyCarData?.safety_car_periods.map((sc, idx) => {
-                    const isRedFlag = sc.type === 'Red Flag'
-                    return (
+                  {safetyCarData?.safety_car_periods
+                    .filter(sc => sc.type !== 'Red Flag')
+                    .map((sc, idx) => (
                       <ReferenceLine 
-                        key={`incident-scatter-${sc.lap}-${idx}`} 
-                        x={sc.lap} 
-                        stroke={isRedFlag ? '#ff0000' : '#ffff00'} 
-                        strokeWidth={3}
+                        key={`incident-scatter-${sc.start_lap}-${idx}`} 
+                        x={sc.start_lap} 
+                        stroke="#ffff00" 
+                        strokeWidth={2}
                         strokeDasharray="3 3"
                       />
-                    )
-                  })}
+                    ))
+                  }
                   
                   {/* All points with color by compound */}
                   <Scatter 

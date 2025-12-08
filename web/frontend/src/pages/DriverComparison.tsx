@@ -4,34 +4,76 @@ import { apiService, type Comparison, type Race } from '@/services/api'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line } from 'recharts'
 import { Trophy, Clock, TrendingUp, Activity, Target, Zap } from 'lucide-react'
 
-const DRIVERS = ['VER', 'HAM', 'LEC', 'NOR', 'PER', 'SAI', 'RUS', 'ALO', 'PIA', 'OCO', 'GAS', 'STR', 'BOT', 'ZHO', 'TSU', 'RIC', 'MAG', 'HUL', 'ALB', 'SAR']
-const YEARS = [2024, 2023, 2022, 2021]
+const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018]
+
+interface Driver {
+  code: string
+  name: string
+  number: string
+}
 
 export default function DriverComparison() {
-  const [year, setYear] = useState(2024)
-  const [race, setRace] = useState(1)
-  const [raceName, setRaceName] = useState('Bahrain Grand Prix')
-  const [driver1, setDriver1] = useState('VER')
-  const [driver2, setDriver2] = useState('HAM')
+  const [year, setYear] = useState(2025)
+  const [race, setRace] = useState<number | null>(null)
+  const [raceName, setRaceName] = useState('')
+  const [driver1, setDriver1] = useState('')
+  const [driver2, setDriver2] = useState('')
+  const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([])
+  const [loadingDrivers, setLoadingDrivers] = useState(false)
   const [comparison, setComparison] = useState<Comparison | null>(null)
   const [races, setRaces] = useState<Race[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    setComparison(null)
+    setAvailableDrivers([])
+    setRace(null)
     loadRaces()
   }, [year])
+
+  useEffect(() => {
+    if (year && race) {
+      loadDrivers()
+    }
+  }, [year, race])
 
   const loadRaces = async () => {
     try {
       const data = await apiService.getRaces(year)
-      setRaces(data)
-      if (data.length > 0) {
-        setRace(data[0].round)
-        setRaceName(data[0].race_name)
-      }
+      setRaces(data.filter(r => !r.race_name.toLowerCase().includes('pre-season')))
+      setRace(null)
     } catch (err) {
       console.error('Failed to load races:', err)
+    }
+  }
+
+  const loadDrivers = async () => {
+    if (!year || !race) return
+    
+    setLoadingDrivers(true)
+    setComparison(null)
+    
+    try {
+      const response = await fetch(`http://localhost:8000/drivers/${year}/${race}`)
+      const data = await response.json()
+      
+      setAvailableDrivers(data.drivers)
+      
+      if (data.drivers.length >= 2) {
+        const driverCodes = data.drivers.map((d: Driver) => d.code)
+        if (!driver1 || !driverCodes.includes(driver1)) {
+          setDriver1(data.drivers[0].code)
+        }
+        if (!driver2 || !driverCodes.includes(driver2)) {
+          setDriver2(data.drivers[1].code)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load drivers:', err)
+      setError('Failed to load drivers for this race')
+    } finally {
+      setLoadingDrivers(false)
     }
   }
 
@@ -44,6 +86,8 @@ export default function DriverComparison() {
   }
 
   const loadComparison = async () => {
+    if (!race || !driver1 || !driver2) return
+    
     setLoading(true)
     setError(null)
     
@@ -123,6 +167,7 @@ export default function DriverComparison() {
               <select
                 value={year}
                 onChange={(e) => setYear(Number(e.target.value))}
+                disabled={loading || loadingDrivers}
                 className="w-full px-4 py-2 rounded-md border border-border bg-card text-foreground"
               >
                 {YEARS.map(y => (
@@ -134,10 +179,12 @@ export default function DriverComparison() {
             <div>
               <label className="text-sm font-medium mb-2 block">Race</label>
               <select
-                value={race}
+                value={race || ''}
                 onChange={(e) => handleRaceChange(Number(e.target.value))}
+                disabled={loading || loadingDrivers}
                 className="w-full px-4 py-2 rounded-md border border-border bg-card text-foreground"
               >
+                <option value="">Select a race</option>
                 {races.map(r => (
                   <option key={r.round} value={r.round}>
                     {r.round}. {r.race_name}
@@ -147,35 +194,49 @@ export default function DriverComparison() {
             </div>
 
             <div>
-              <label className="text-sm font-medium mb-2 block">Driver 1</label>
+              <label className="text-sm font-medium mb-2 block">
+                Driver 1 {loadingDrivers && <span className="text-muted-foreground">(loading...)</span>}
+              </label>
               <select
                 value={driver1}
                 onChange={(e) => setDriver1(e.target.value)}
+                disabled={availableDrivers.length === 0 || loading || loadingDrivers}
                 className="w-full px-4 py-2 rounded-md border border-border bg-card text-foreground"
               >
-                {DRIVERS.map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
+                {availableDrivers.length === 0 ? (
+                  <option value="">Select a race first</option>
+                ) : (
+                  availableDrivers.map(d => (
+                    <option key={d.code} value={d.code}>{d.name}</option>
+                  ))
+                )}
               </select>
             </div>
 
             <div>
-              <label className="text-sm font-medium mb-2 block">Driver 2</label>
+              <label className="text-sm font-medium mb-2 block">
+                Driver 2 {loadingDrivers && <span className="text-muted-foreground">(loading...)</span>}
+              </label>
               <select
                 value={driver2}
                 onChange={(e) => setDriver2(e.target.value)}
+                disabled={availableDrivers.length === 0 || loading || loadingDrivers}
                 className="w-full px-4 py-2 rounded-md border border-border bg-card text-foreground"
               >
-                {DRIVERS.map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
+                {availableDrivers.length === 0 ? (
+                  <option value="">Select a race first</option>
+                ) : (
+                  availableDrivers.map(d => (
+                    <option key={d.code} value={d.code}>{d.name}</option>
+                  ))
+                )}
               </select>
             </div>
           </div>
 
           <button
             onClick={loadComparison}
-            disabled={loading}
+            disabled={loading || loadingDrivers || !race || !driver1 || !driver2}
             className="mt-4 w-full md:w-auto px-6 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {loading ? 'Loading...' : 'Compare Drivers'}

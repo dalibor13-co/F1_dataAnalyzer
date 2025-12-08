@@ -1,0 +1,35 @@
+# 📸 Visual Preview Placeholders
+
+Toto jsou placeholder obrázky. Pro zobrazení skutečných screenshotů:
+
+1. Spusť aplikaci a udělej screenshoty
+2. Nahraď tyto placeholder soubory skutečnými obrázky
+3. Nebo použij tento Python script pro automatické screenshoty (vyžaduje selenium):
+
+```python
+from selenium import webdriver
+import time
+
+driver = webdriver.Chrome()
+
+# Dashboard
+driver.get("http://localhost:3000")
+time.sleep(3)
+driver.save_screenshot("dashboard.png")
+
+# Telemetry
+driver.get("http://localhost:3000/telemetry")
+time.sleep(5)
+driver.save_screenshot("telemetry.png")
+
+# Atd...
+driver.quit()
+```
+
+## Tip: Použij GitHub Issues pro obrázky
+
+Alternativně můžeš obrázky nahrát do GitHub Issues a použít jejich URL v README:
+
+```markdown
+![Dashboard](https://user-images.githubusercontent.com/xxxxx/dashboard.png)
+```

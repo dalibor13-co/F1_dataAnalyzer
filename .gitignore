@@ -31,6 +31,7 @@ ENV/
 *.swp
 *.swo
 *~
+.coverage
 
 # Data
 data/raw/
